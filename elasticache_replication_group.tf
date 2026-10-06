@@ -1,60 +1,62 @@
+# Copyright 2025 Automate the Cloud Inc.
+# SPDX-License-Identifier: Apache-2.0
+
 resource "aws_elasticache_replication_group" "this" {
+  region               = var.region
   replication_group_id = var.name
-  description          = "${local.scope.name} - ${local.purpose.name} [${local.environment.name}] (${local.aws.region.name}): ElastiCache - ${var.name}"
+  description          = local.description
   engine               = var.engine
   engine_version       = var.engine_version
+  node_type            = var.node_type
   port                 = var.port
-
-  node_type               = var.node_type
-  num_cache_clusters      = var.num_cache_clusters
-  num_node_groups         = var.num_node_groups
-  replicas_per_node_group = var.replicas_per_node_group
-
   parameter_group_name = var.parameter_group_name
-
-  subnet_group_name = var.subnet_group_name
-
-  cluster_mode               = var.cluster_mode
-  multi_az_enabled           = var.multi_az_enabled
-  automatic_failover_enabled = var.automatic_failover_enabled
-  network_type               = var.network_type
-  ip_discovery               = var.ip_discovery
-
-  security_group_ids = concat([aws_security_group.this.id], var.security_groups_additional)
-
   data_tiering_enabled = var.data_tiering_enabled
 
-  at_rest_encryption_enabled = try(var.encryption.kms_key_id, null) != null ? true : false
-  kms_key_id                 = try(var.encryption.kms_key_id, null)
+  cluster_mode               = var.cluster_mode
+  num_node_groups            = var.num_node_groups
+  replicas_per_node_group    = var.replicas_per_node_group
+  automatic_failover_enabled = local.automatic_failover_enabled
+  multi_az_enabled           = var.multi_az_enabled
 
-  transit_encryption_enabled = try(var.encryption.transit.encryption_enabled, false)
-  transit_encryption_mode    = try(var.encryption.transit.encryption_mode, null)
+  subnet_group_name  = var.subnet_group_name
+  security_group_ids = concat([aws_security_group.this.id], var.additional_security_group_ids)
+  network_type       = var.network_type
+  ip_discovery       = var.ip_discovery
 
-  maintenance_window         = try(var.maintenance.window, null)
-  auto_minor_version_upgrade = try(var.maintenance.auto_minor_version_upgrade, null)
-  apply_immediately          = try(var.maintenance.apply_immediately, false)
+  # Data at rest is always encrypted; AWS cannot turn it on for an existing cache.
+  at_rest_encryption_enabled = true
+  kms_key_id                 = var.kms_key_id
+  transit_encryption_enabled = var.transit_encryption.enabled
+  transit_encryption_mode    = var.transit_encryption.enabled ? var.transit_encryption.mode : null
 
-  snapshot_name             = try(var.snapshot.name, null)
-  snapshot_retention_limit  = try(var.snapshot.retention_limit, null)
-  snapshot_window           = try(var.snapshot.window, null)
-  final_snapshot_identifier = "${var.name}-${random_id.snapshot_identifier.hex}-FINAL"
-
+  # The provider refuses user_group_ids beside auth_token, even when it is empty, and
+  # auth_token_update_strategy without auth_token. Whether a token is set is not a
+  # secret; without nonsensitive(), the strategy, and so metadata, would be sensitive.
   auth_token                 = var.auth_token
-  auth_token_update_strategy = var.auth_token_update_strategy
-  user_group_ids             = try(var.user_group_id, null) != null ? toset([var.user_group_id]) : null
+  auth_token_update_strategy = nonsensitive(var.auth_token != null) ? var.auth_token_update_strategy : null
+  user_group_ids             = length(var.user_group_ids) > 0 ? var.user_group_ids : null
 
-  log_delivery_configuration {
-    destination_type = "cloudwatch-logs"
-    destination      = aws_cloudwatch_log_group.engine.name
-    log_format       = try(var.cloudwatch.log_format, "text")
-    log_type         = "engine-log"
+  snapshot_name             = var.snapshot.restore_from
+  snapshot_retention_limit  = var.snapshot.retention_limit
+  snapshot_window           = var.snapshot.window
+  final_snapshot_identifier = var.snapshot.final_snapshot ? "${var.name}-final-${random_id.final_snapshot.hex}" : null
+
+  maintenance_window         = var.maintenance.window
+  auto_minor_version_upgrade = var.maintenance.auto_minor_version_upgrade
+  apply_immediately          = var.maintenance.apply_immediately
+
+  dynamic "log_delivery_configuration" {
+    for_each = local.cloudwatch_log_groups
+
+    content {
+      destination_type = "cloudwatch-logs"
+      destination      = aws_cloudwatch_log_group.this[log_delivery_configuration.key].name
+      log_format       = var.cloudwatch_logs.log_format
+      log_type         = log_delivery_configuration.key
+    }
   }
-  log_delivery_configuration {
-    destination_type = "cloudwatch-logs"
-    destination      = aws_cloudwatch_log_group.slow.name
-    log_format       = try(var.cloudwatch.log_format, "text")
-    log_type         = "slow-log"
-  }
+
+  tags = local.tags
 
   timeouts {
     create = var.timeouts.create
@@ -62,14 +64,12 @@ resource "aws_elasticache_replication_group" "this" {
     delete = var.timeouts.delete
   }
 
+  # The snapshot a cache was created from can be changed only by replacing the cache.
   lifecycle {
-    ignore_changes = [
-      snapshot_name,
-      engine_version
-    ]
+    ignore_changes = [snapshot_name]
   }
 
-  tags = local.tags
-
-  provider = aws.this
+  # Ingress rules first, and, when the security group is replaced, the old rules are
+  # deleted only after the cache has moved to the new group.
+  depends_on = [aws_vpc_security_group_ingress_rule.this]
 }

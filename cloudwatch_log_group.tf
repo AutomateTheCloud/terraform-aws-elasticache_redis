@@ -1,13 +1,15 @@
-resource "aws_cloudwatch_log_group" "engine" {
-  name              = "/aws/elasticache/${var.engine}/${var.name}/engine"
-  retention_in_days = try(var.cloudwatch.retention, 7)
-  tags              = local.tags
-  provider          = aws.this
-}
+# Copyright 2025 Automate the Cloud Inc.
+# SPDX-License-Identifier: Apache-2.0
 
-resource "aws_cloudwatch_log_group" "slow" {
-  name              = "/aws/elasticache/${var.engine}/${var.name}/slow"
-  retention_in_days = try(var.cloudwatch.retention, 7)
-  tags              = local.tags
-  provider          = aws.this
+# The log groups ElastiCache publishes to, created before the cache so that their
+# retention and encryption apply from the first log event.
+resource "aws_cloudwatch_log_group" "this" {
+  for_each = local.cloudwatch_log_groups
+
+  region            = var.region
+  name              = each.value
+  retention_in_days = var.cloudwatch_logs.retention_in_days
+  kms_key_id        = var.cloudwatch_logs.kms_key_id
+
+  tags = local.tags
 }
